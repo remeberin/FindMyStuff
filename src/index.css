@@ -202,6 +202,10 @@ a { color: inherit; text-decoration: none; }
 .modal .privacy-check input { width: 17px; height: 17px; accent-color: var(--green); }
 .full-button { width: 100%; margin-top: 3px; }
 .turnstile-wrap { min-height: 65px; display: flex; justify-content: center; overflow: hidden; }
+.captcha-warning { border: 1px solid #e7c8a7; border-radius: 10px; padding: 10px 12px; color: #7a431d; background: #fff5e9; font-size: 11px; line-height: 1.45; }
+.captcha-retry { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; color: var(--green); background: var(--white); font-size: 11px; font-weight: 700; }
+.resend-confirmation { border: 0; padding: 0; color: var(--green); background: transparent; font-size: 11px; font-weight: 700; }
+.resend-confirmation:disabled { cursor: not-allowed; opacity: .5; }
 .login-options { display: flex; align-items: center; justify-content: space-between; }
 .modal .remember { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 7px; color: var(--ink-soft); font-weight: 500; }
 .modal .remember input { width: 16px; height: 16px; accent-color: var(--green); }

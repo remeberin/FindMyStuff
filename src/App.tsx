@@ -21,6 +21,7 @@ type TurnstileApi = {
       callback: (token: string) => void
       "expired-callback": () => void
       "error-callback": () => void
+      "timeout-callback": () => void
       theme: "light"
     },
   ) => string
@@ -66,11 +67,24 @@ function loadTurnstile() {
   return turnstileLoader
 }
 
-function TurnstileChallenge({ onToken }: { onToken: (token: string) => void }) {
+type CaptchaStatus = "loading" | "ready" | "verified" | "error" | "missing"
+
+function TurnstileChallenge({
+  onToken,
+  onStatus,
+}: {
+  onToken: (token: string) => void
+  onStatus: (status: CaptchaStatus) => void
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!TURNSTILE_SITE_KEY || !containerRef.current) return
+    if (!TURNSTILE_SITE_KEY) {
+      onStatus("missing")
+      return
+    }
+    if (!containerRef.current) return
+    onStatus("loading")
     let active = true
     let widgetId = ""
     loadTurnstile()
@@ -78,20 +92,37 @@ function TurnstileChallenge({ onToken }: { onToken: (token: string) => void }) {
         if (!active || !containerRef.current) return
         widgetId = turnstile.render(containerRef.current, {
           sitekey: TURNSTILE_SITE_KEY,
-          callback: onToken,
-          "expired-callback": () => onToken(""),
-          "error-callback": () => onToken(""),
+          callback: (token) => {
+            onToken(token)
+            onStatus("verified")
+          },
+          "expired-callback": () => {
+            onToken("")
+            onStatus("ready")
+          },
+          "error-callback": () => {
+            onToken("")
+            onStatus("error")
+          },
+          "timeout-callback": () => {
+            onToken("")
+            onStatus("error")
+          },
           theme: "light",
         })
+        onStatus("ready")
       })
-      .catch(() => onToken(""))
+      .catch(() => {
+        turnstileLoader = null
+        onToken("")
+        onStatus("error")
+      })
     return () => {
       active = false
       if (widgetId && window.turnstile) window.turnstile.remove(widgetId)
     }
-  }, [onToken])
+  }, [onStatus, onToken])
 
-  if (!TURNSTILE_SITE_KEY) return null
   return <div className="turnstile-wrap" ref={containerRef} />
 }
 
@@ -386,6 +417,8 @@ export default function App() {
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false)
   const [captchaToken, setCaptchaToken] = useState("")
   const [captchaKey, setCaptchaKey] = useState(0)
+  const [captchaStatus, setCaptchaStatus] = useState<CaptchaStatus>("loading")
+  const [authEmail, setAuthEmail] = useState("")
   const [notifications, setNotifications] = useState<Notification[]>(() =>
     loadStored(STORAGE.notifications, [
       {
@@ -438,9 +471,25 @@ export default function App() {
 
   useEffect(() => {
     setCaptchaToken("")
+    setCaptchaStatus(TURNSTILE_SITE_KEY ? "loading" : "missing")
   }, [authMode, modal])
 
   useEffect(() => {
+    const query = new URLSearchParams(window.location.search)
+    const hash = new URLSearchParams(window.location.hash.slice(1))
+    const authError =
+      query.get("error_description") || hash.get("error_description")
+    const authErrorCode = query.get("error_code") || hash.get("error_code")
+    if (authError || authErrorCode) {
+      const isExpired = authErrorCode === "otp_expired"
+      showNotice(
+        isExpired
+          ? "Tautan konfirmasi sudah kedaluwarsa. Daftar atau minta email baru."
+          : "Konfirmasi email gagal. Pastikan URL website sudah diizinkan di Supabase.",
+      )
+      window.history.replaceState({}, document.title, window.location.pathname)
+    }
+
     loadReports()
     supabase.auth
       .getSession()
@@ -637,13 +686,18 @@ export default function App() {
             password,
             options: {
               data: { name },
-              emailRedirectTo: window.location.origin,
+              emailRedirectTo: `${window.location.origin}/`,
               captchaToken,
             },
           })
           if (error) {
+            const message = error.message.toLowerCase()
             showNotice(
-              "Pendaftaran belum dapat diproses. Periksa data atau coba masuk jika sudah memiliki akun.",
+              message.includes("captcha")
+                ? "Verifikasi Cloudflare gagal. Muat ulang CAPTCHA lalu coba lagi."
+                : message.includes("redirect")
+                  ? "URL konfirmasi belum diizinkan di Supabase."
+                  : "Pendaftaran belum dapat diproses. Periksa data atau coba masuk jika sudah memiliki akun.",
             )
             return
           }
@@ -667,7 +721,14 @@ export default function App() {
             options: { captchaToken },
           })
           if (error) {
-            showNotice("Email atau kata sandi tidak sesuai.")
+            const message = error.message.toLowerCase()
+            showNotice(
+              message.includes("captcha")
+                ? "Verifikasi Cloudflare gagal. Muat ulang CAPTCHA lalu coba lagi."
+                : message.includes("confirm")
+                  ? "Email belum dikonfirmasi. Buka email konfirmasi terbaru."
+                  : "Email atau kata sandi tidak sesuai.",
+            )
             return
           }
           addNotification(
@@ -824,6 +885,47 @@ export default function App() {
   async function logout() {
     await supabase.auth.signOut()
     showNotice("Kamu telah keluar dari akun.")
+  }
+
+  async function resendConfirmation() {
+    const email = authEmail.trim().toLowerCase()
+    if (!email) {
+      showNotice("Masukkan email akun terlebih dahulu.")
+      return
+    }
+    if (!captchaToken) {
+      showNotice("Selesaikan pemeriksaan keamanan terlebih dahulu.")
+      return
+    }
+    setIsAuthSubmitting(true)
+    try {
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/`,
+          captchaToken,
+        },
+      })
+      if (error) {
+        showNotice(
+          error.message.toLowerCase().includes("captcha")
+            ? "Verifikasi Cloudflare gagal. Muat ulang lalu coba lagi."
+            : "Email konfirmasi belum dapat dikirim. Coba beberapa saat lagi.",
+        )
+        return
+      }
+      showNotice(
+        "Email konfirmasi baru sudah dikirim. Periksa kotak masuk dan spam.",
+      )
+    } catch {
+      showNotice("Tidak dapat terhubung ke layanan email. Coba lagi.")
+    } finally {
+      setIsAuthSubmitting(false)
+      setCaptchaToken("")
+      setCaptchaStatus("loading")
+      setCaptchaKey((current) => current + 1)
+    }
   }
 
   function openClaim(name: string) {
@@ -1563,6 +1665,8 @@ export default function App() {
                         name="email"
                         required
                         type="email"
+                        value={authEmail}
+                        onChange={(event) => setAuthEmail(event.target.value)}
                         autoComplete="email"
                         inputMode="email"
                         placeholder="nama@email.com"
@@ -1595,13 +1699,47 @@ export default function App() {
                     <TurnstileChallenge
                       key={`${authMode}-${captchaKey}`}
                       onToken={setCaptchaToken}
+                      onStatus={setCaptchaStatus}
                     />
+                    {captchaStatus === "missing" && (
+                      <div className="captcha-warning">
+                        VITE_TURNSTILE_SITE_KEY belum dipasang di Vercel.
+                      </div>
+                    )}
+                    {captchaStatus === "error" && (
+                      <button
+                        className="captcha-retry"
+                        type="button"
+                        onClick={() => {
+                          setCaptchaToken("")
+                          setCaptchaStatus("loading")
+                          setCaptchaKey((current) => current + 1)
+                        }}
+                      >
+                        Muat ulang pemeriksaan keamanan
+                      </button>
+                    )}
+                    {authMode === "login" && (
+                      <button
+                        className="resend-confirmation"
+                        type="button"
+                        disabled={
+                          isAuthSubmitting ||
+                          captchaStatus !== "verified" ||
+                          !authEmail.trim()
+                        }
+                        onClick={resendConfirmation}
+                      >
+                        Kirim ulang email konfirmasi
+                      </button>
+                    )}
                     <Button
                       className="full-button"
                       type="submit"
                       disabled={
                         isAuthSubmitting ||
-                        Boolean(TURNSTILE_SITE_KEY && !captchaToken)
+                        captchaStatus !== "verified" ||
+                        !captchaToken
                       }
                     >
                       {isAuthSubmitting
