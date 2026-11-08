@@ -326,6 +326,51 @@ function loadStored<T>(key: string, fallback: T): T {
   }
 }
 
+type AuthErrorDetails = {
+  message: string
+  code?: string
+}
+
+function authErrorMessage(
+  error: AuthErrorDetails,
+  action: "register" | "login" | "resend",
+) {
+  const message = error.message.toLowerCase()
+  const code = error.code || ""
+
+  if (
+    code.includes("captcha") ||
+    message.includes("captcha") ||
+    message.includes("verification process failed")
+  )
+    return "Verifikasi Cloudflare ditolak. Pastikan Site Key dan Secret Key berasal dari widget yang sama."
+  if (
+    code.includes("rate_limit") ||
+    message.includes("rate limit") ||
+    message.includes("too many")
+  )
+    return "Batas pengiriman email tercapai. Tunggu sekitar satu jam atau aktifkan Custom SMTP."
+  if (code === "signup_disabled" || message.includes("signups not allowed"))
+    return "Pendaftaran sedang dinonaktifkan di pengaturan Supabase."
+  if (
+    code === "email_address_invalid" ||
+    message.includes("email address is invalid")
+  )
+    return "Alamat email ditolak oleh Supabase. Gunakan alamat email aktif."
+  if (code === "weak_password" || message.includes("password"))
+    return "Kata sandi ditolak. Gunakan minimal 12 karakter dengan huruf besar, huruf kecil, dan angka."
+  if (
+    action === "login" &&
+    (code === "email_not_confirmed" || message.includes("not confirmed"))
+  )
+    return "Email belum dikonfirmasi. Gunakan tombol kirim ulang email konfirmasi."
+  if (action === "login") return "Email atau kata sandi tidak sesuai."
+  if (action === "resend")
+    return "Email konfirmasi belum dapat dikirim. Periksa SMTP atau tunggu sebelum mencoba lagi."
+
+  return `Pendaftaran gagal (${code || "auth_error"}): ${error.message}`
+}
+
 const items: Item[] = []
 
 const categories = [
@@ -691,14 +736,7 @@ export default function App() {
             },
           })
           if (error) {
-            const message = error.message.toLowerCase()
-            showNotice(
-              message.includes("captcha")
-                ? "Verifikasi Cloudflare gagal. Muat ulang CAPTCHA lalu coba lagi."
-                : message.includes("redirect")
-                  ? "URL konfirmasi belum diizinkan di Supabase."
-                  : "Pendaftaran belum dapat diproses. Periksa data atau coba masuk jika sudah memiliki akun.",
-            )
+            showNotice(authErrorMessage(error, "register"))
             return
           }
           if (!data.session) {
@@ -721,14 +759,7 @@ export default function App() {
             options: { captchaToken },
           })
           if (error) {
-            const message = error.message.toLowerCase()
-            showNotice(
-              message.includes("captcha")
-                ? "Verifikasi Cloudflare gagal. Muat ulang CAPTCHA lalu coba lagi."
-                : message.includes("confirm")
-                  ? "Email belum dikonfirmasi. Buka email konfirmasi terbaru."
-                  : "Email atau kata sandi tidak sesuai.",
-            )
+            showNotice(authErrorMessage(error, "login"))
             return
           }
           addNotification(
@@ -908,11 +939,7 @@ export default function App() {
         },
       })
       if (error) {
-        showNotice(
-          error.message.toLowerCase().includes("captcha")
-            ? "Verifikasi Cloudflare gagal. Muat ulang lalu coba lagi."
-            : "Email konfirmasi belum dapat dikirim. Coba beberapa saat lagi.",
-        )
+        showNotice(authErrorMessage(error, "resend"))
         return
       }
       showNotice(
